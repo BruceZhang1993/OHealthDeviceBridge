@@ -1,12 +1,12 @@
 # OHealthDeviceBridge
 
-一个基于 Kotlin + Xposed/LSPosed 的 OPPO 健康第三方设备桥接模块。首个设备为 **AFU-BH-TZ-B1** 体脂秤。
+一个基于 Kotlin + Xposed/LSPosed 的 OPPO 健康第三方设备桥接模块。首个设备为 **薄荷健康B1智能体脂秤（蚂蚁阿福联名款）**，设备代号 `AFU-BH-TZ-B1`。
 
 > 当前目标宿主固定为 `com.heytap.health` / OPPO 健康 `6.9.39_9d6948f_260928`。厂商私有类和 synthetic 方法可能随版本变化，升级宿主后需要重新验证 Hook 点。
 
 ## 当前能力
 
-- 在 OPPO 健康“添加设备”的体脂秤分类中注入 `AFU-BH-TZ-B1`
+- 在 OPPO 健康“添加设备”的体脂秤分类中注入薄荷健康B1智能体脂秤（蚂蚁阿福联名款），副标题使用 `AFU-BH-TZ-B1`
 - 将 AFU 逻辑路由到 OPPO 原有 `BOOHEE / Connect Scale` 业务链
 - 使用模块自己的 BLE scanner 扫描 `0xFC50 + AFU` 设备
 - 生成 synthetic `BHDeviceModel` / `BindableScaleDevice`，复用 OPPO 原绑定 UI
@@ -40,7 +40,21 @@ device/DeviceDriver                   |  future device drivers
 
 ## Xposed 框架
 
-使用 YukiHookAPI `1.3.2` 作为 Kotlin Xposed 模块基础设施。LSPosed Scope 只需要 `com.heytap.health`，不需要勾选 Android Framework、Bluetooth 或 SystemUI。
+模块入口使用 Modern Xposed / libxposed API `101`，通过 `META-INF/xposed/java_init.list` 声明入口，并使用：
+
+```properties
+minApiVersion=101
+targetApiVersion=101
+staticScope=true
+```
+
+静态作用域由 `META-INF/xposed/scope.list` 固定为：
+
+```text
+com.heytap.health
+```
+
+因此模块只作用于 OPPO 健康，不需要也不能额外扩展到 Android Framework、Bluetooth、SystemUI 或其他 App。当前 OPPO Hook 实现仍复用 legacy `XposedBridge/XposedHelpers`，所以 `targetApiVersion` 固定在 101；后续若整体迁移到 libxposed interceptor API，再升级到 API 102。
 
 ## AFU BLE 主流程
 
@@ -64,7 +78,7 @@ CI 使用 Gradle 9.2.1 / AGP 8.13.1 / Kotlin 2.2.21 / JDK 21：
 gradle :app:testDebugUnitTest :app:assembleDebug
 ```
 
-CI 额外检查 YukiHookAPI 的 Xposed entry 是否真正打入 APK。
+CI 额外检查 Modern Xposed 的 `java_init.list`、`module.prop`、`scope.list` 是否正确打入 APK，并确保不会重新打包 legacy `assets/xposed_init`。
 
 ## 已知需要真机确认
 
