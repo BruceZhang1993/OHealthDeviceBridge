@@ -1,7 +1,6 @@
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
-    id("com.google.devtools.ksp")
 }
 
 android {
@@ -38,19 +37,10 @@ android {
 }
 
 dependencies {
-    implementation("androidx.annotation:annotation:1.9.1")
-    implementation("com.highcapable.yukihookapi:api:1.3.2")
+    // Modern Xposed entry / module metadata. targetApiVersion=101 intentionally keeps
+    // compatibility with the existing legacy XposedBridge/XposedHelpers hook layer.
+    compileOnly("io.github.libxposed:api:101.0.1")
     compileOnly("de.robv.android.xposed:api:82")
-    ksp("com.highcapable.yukihookapi:ksp-xposed:1.3.2")
 
     testImplementation("junit:junit:4.13.2")
-}
-
-// YukiHookAPI 1.3.x currently writes xposed_init from KSP into the source tree.
-// Force AGP merge tasks to run after KSP so clean CI builds always package the entry files.
-afterEvaluate {
-    listOf("Debug", "Release").forEach { variant ->
-        tasks.findByName("merge${variant}Assets")?.dependsOn("ksp${variant}Kotlin")
-        tasks.findByName("merge${variant}JavaResource")?.dependsOn("ksp${variant}Kotlin")
-    }
 }
