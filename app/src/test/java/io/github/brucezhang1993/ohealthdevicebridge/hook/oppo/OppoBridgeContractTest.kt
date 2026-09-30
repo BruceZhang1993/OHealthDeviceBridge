@@ -61,9 +61,9 @@ class OppoBridgeContractTest {
         try { body.buildScaleModel(manager, mac, record); fail("Expected failure") }
         catch (error: IllegalStateException) { assertEquals("algorithm failed", error.message) }
     }
-    @Test fun overlayDoesNotNeedExistingDeviceTemplate() {
-        val item = factory.createWeightDevice(mac, true) as WeightScaleDeviceInfo
-        assertEquals(mac, item.id); assertEquals(mac, item.mac); assertEquals(100, item.deviceType)
+    @Test fun overlayUsesHostDeviceTypeWithoutExistingTemplateClone() {
+        val item = factory.createWeightDevice(mac, true, 314) as WeightScaleDeviceInfo
+        assertEquals(mac, item.id); assertEquals(mac, item.mac); assertEquals(314, item.deviceType)
         assertTrue(item.connectScale); assertTrue(item.connected)
     }
     @Test fun historyUsesNativeUnclaimedImporterAndHistoryFlag() {
