@@ -5,7 +5,58 @@ import io.github.brucezhang1993.ohealthdevicebridge.*
 import io.github.brucezhang1993.ohealthdevicebridge.device.DeviceRegistry
 import io.github.brucezhang1993.ohealthdevicebridge.store.AfuBindingStore
 
-object BooheeBindHook{
-    private const val MANAGER="com.heytap.device.ui.weight.scale.boohee.BHDeviceManager"
-    fun install(cl:ClassLoader){val clazz=XposedHelpers.findClass(MANAGER,cl);val hooks=XposedBridge.hookAllMethods(clazz,"bind",object:XC_MethodHook(){override fun beforeHookedMethod(param:MethodHookParam){val device=param.args.getOrNull(0)?:return;val model=OppoReflect.readString(device,"getModel","model");if(!model.equals(BridgeConstants.AFU_MODEL,true))return;val mac=OppoReflect.readString(device,"getMac","mac")?:return;val listener=param.args.getOrNull(1)?:return;val context=OppoReflect.context()?:return;param.result=null;DeviceRegistry.afu().verifyForBind(context,mac,{AfuBindingStore.add(context,mac);OppoReflect.postMain{runCatching{OppoReflect.call(param.thisObject,"onBindSucceededOnThisPhone",mac)}.onFailure{BridgeLog.e("failed to mark AFU bound on this phone",it)};if(!OppoReflect.callFirst(listener,listOf("onSuccess"),device))BridgeLog.e("BindListener.onSuccess not found")}}, {e->BridgeLog.e("AFU bind verification failed",e);OppoReflect.postMain{OppoReflect.callFirst(listener,listOf("onFail","onFailure","onError","onFailed"),e.message?:"AFU bind failed")}})}});check(hooks.isNotEmpty());HookInstallState.bind=true;BridgeLog.i("Boohee bind hook installed")}
+object BooheeBindHook {
+    fun install(cl: ClassLoader) {
+        val clazz = XposedHelpers.findClass("com.heytap.device.ui.weight.scale.boohee.BHDeviceManager", cl)
+        val hooks = XposedBridge.hookAllMethods(clazz, "bind", object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                val device = param.args[0]
+                if (!OppoReflect.readString(device, "getModel", "model").equals(BridgeConstants.AFU_MODEL, true)) return
+                param.result = null
+                OppoReflect.postMain {
+                    val listener = param.args[1]
+                    try {
+                        val context = checkNotNull(OppoReflect.context()) { "OPPO context unavailable" }
+                        val mac = checkNotNull(OppoReflect.readString(device, "getMac", "mac"))
+                        OppoAfuRuntime.stopAll()
+                        pauseNative(cl, param.thisObject)
+                        val ticket = OppoAfuRuntime.Ticket(OppoAccount.key(cl), mac)
+                        OppoAfuRuntime.bind = ticket
+                        DeviceRegistry.afu().verifyForBind(context, mac, {
+                            if (ticket.valid(cl)) {
+                                try {
+                                    OppoReflect.call(param.thisObject, "onBindSucceededOnThisPhone", mac)
+                                    AfuBindingStore.add(context, ticket.account, mac)
+                                    // Local transport binding is independent of asynchronous cloud persistence.
+                                    OppoReflect.call(listener, "onSuccess", device)
+                                } catch (error: Exception) {
+                                    BridgeLog.e("AFU bind callback failed", error)
+                                    OppoReflect.callFirst(listener, listOf("onFail"), error.message ?: "AFU bind callback failed")
+                                } finally {
+                                    ticket.active = false
+                                    if (OppoAfuRuntime.bind === ticket) OppoAfuRuntime.bind = null
+                                }
+                            }
+                        }, { error -> if (ticket.valid(cl)) {
+                            ticket.active = false
+                            if (OppoAfuRuntime.bind === ticket) OppoAfuRuntime.bind = null
+                            OppoReflect.call(listener, "onFail", error.message ?: "AFU bind failed")
+                        } })
+                    } catch (error: Exception) {
+                        BridgeLog.e("AFU bind failed", error)
+                        OppoReflect.callFirst(listener, listOf("onFail"), error.message ?: "AFU bind failed")
+                    }
+                }
+            }
+        })
+        check(hooks.isNotEmpty())
+        HookInstallState.bind = true
+    }
+    internal fun pauseNative(cl: ClassLoader, manager: Any) {
+        val coordinator = cl.loadClass("com.heytap.device.ui.weight.scale.WeightScaleKeepAliveCoordinator").getField("INSTANCE").get(null)!!
+        OppoReflect.call(coordinator, "pause")
+        OppoReflect.call(manager, "forceStopKeepAlive", "AFU transport handoff")
+        OppoReflect.call(manager, "stopMeasureReceive")
+        OppoReflect.call(manager, "interruptBind", true)
+    }
 }

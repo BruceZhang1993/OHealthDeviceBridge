@@ -1,14 +1,56 @@
 package io.github.brucezhang1993.ohealthdevicebridge.hook.oppo
 
-import de.robv.android.xposed.XposedHelpers
-import io.github.brucezhang1993.ohealthdevicebridge.BridgeLog
+import android.content.Context
 import io.github.brucezhang1993.ohealthdevicebridge.device.*
 
-class OppoBodyComposition(private val classLoader:ClassLoader,private val factory:OppoObjectFactory){
-    fun prepare(manager:Any,userTag:String?){OppoReflect.tryCall(manager,"ensureInit");if(!userTag.isNullOrBlank())OppoReflect.tryCall(manager,"refreshUserModelToSdk",userTag)}
-    fun currentUserProfile(manager:Any):UserProfile{val user=findUserModel(manager);val age=number(user,"getAge","age")?.toInt()?.takeIf{it in 5..120}?:30;if(user==null)return UserProfile(age,true,60.0);val sexValue=OppoReflect.read(user,"getSex","sex");val male=when(sexValue){is Number->sexValue.toInt()==1;is Boolean->sexValue;is String->sexValue.equals("male",true)||sexValue=="1"||sexValue=="男";else->true};val target=number(user,"getWeight","weight")?.toDouble()?.takeIf{it>0}?:60.0;return UserProfile(age,male,target,1)}
-    fun buildScaleModel(manager:Any,mac:String,record:MeasurementRecord):Any{val clazz=XposedHelpers.findClass(OppoObjectFactory.BH_SCALE_MODEL,classLoader);val model=XposedHelpers.newInstance(clazz);OppoReflect.tryCall(model,"setWeight",record.weightKg.toFloat());OppoReflect.tryCall(model,"setBodyResistance",(record.resistanceOhm?:0).toFloat());OppoReflect.tryCall(model,"setSecond",record.timestampEpochSeconds);OppoReflect.tryCall(model,"setHistory",false);OppoReflect.tryCall(model,"setLockData",true);OppoReflect.tryCall(model,"setDeviceModel",factory.createBhDevice(mac));if(record.resistanceOhm==null||record.resistanceOhm<=0)return model;val bh=findScaleManager(manager)?:return model;val calculated=runCatching{XposedHelpers.callMethod(bh,"handleTheHistoryScaleModelDetailByScaleModel",model)}.onFailure{BridgeLog.e("OPPO ICOMON calculation failed; returning raw BHScaleModel",it)}.getOrNull();return if(calculated!=null&&clazz.isInstance(calculated))calculated else model}
-    private fun findScaleManager(manager:Any)=OppoReflect.fieldByType(manager,OppoObjectFactory.BH_SCALE_MANAGER)?:OppoReflect.read(manager,"getManager","manager")
-    private fun findUserModel(manager:Any):Any?{OppoReflect.fieldByType(manager,OppoObjectFactory.BH_USER_MODEL)?.let{return it};val scale=findScaleManager(manager)?:return null;OppoReflect.fieldByType(scale,OppoObjectFactory.BH_USER_MODEL)?.let{return it};OppoReflect.fields(scale).forEach{(_,n)->if(n!=null)OppoReflect.fieldByType(n,OppoObjectFactory.BH_USER_MODEL)?.let{return it}};return null}
-    private fun number(instance:Any?,vararg names:String)=instance?.let{OppoReflect.read(it,*names) as? Number}
+class OppoBodyComposition(private val classLoader: ClassLoader, private val factory: OppoObjectFactory) {
+    fun prepare(manager: Any, context: Context, userTag: String?) {
+        check(OppoReflect.call(manager, "ensureInit", context) == true) { "Boohee SDK initialization failed" }
+        OppoReflect.call(manager, "refreshUserModelToSdk", userTag)
+        checkNotNull(findUserModel(manager)) { "Boohee user profile unavailable" }
+    }
+    fun currentUserProfile(manager: Any): UserProfile {
+        val user = checkNotNull(findUserModel(manager)) { "Boohee user profile unavailable" }
+        val sex = OppoReflect.read(user, "getSex", "sex") as? Enum<*> ?: error("Unknown Boohee gender type")
+        val male = when (sex.name) {
+            "BHUserGenderMale" -> true
+            "BHUserGenderFemale" -> false
+            else -> error("Unknown Boohee gender")
+        }
+        val age = (OppoReflect.read(user, "getAge", "age") as Number).toInt()
+        val target = (OppoReflect.read(user, "getWeight", "weight") as Number).toDouble()
+        require(age in 5..120 && target > 0) { "Invalid Boohee user profile" }
+        return UserProfile(age, male, target)
+    }
+    fun buildScaleModel(manager: Any, mac: String, record: MeasurementRecord, history: Boolean = false): Any {
+        val clazz = classLoader.loadClass(OppoObjectFactory.BH_SCALE_MODEL)
+        val model = clazz.getConstructor().newInstance()
+        OppoReflect.call(model, "setWeight", record.weightKg.toFloat())
+        OppoReflect.call(model, "setBodyResistance", (record.resistanceOhm ?: 0).toFloat())
+        OppoReflect.call(model, "setSecond", record.timestampEpochSeconds)
+        OppoReflect.call(model, "setHistory", history)
+        OppoReflect.call(model, "setLockData", true)
+        OppoReflect.call(model, "setDeviceModel", factory.createBhDevice(mac))
+        if (record.resistanceOhm == null || record.resistanceOhm <= 0) return model
+        val scaleManager = checkNotNull(findScaleManager(manager)) { "Boohee SDK unavailable" }
+        val calculated = OppoReflect.call(scaleManager, "handleTheHistoryScaleModelDetailByScaleModel", model)
+        check(clazz.isInstance(calculated)) { "ICOMON returned no result" }
+        return requireNotNull(calculated)
+    }
+    fun importHistory(manager: Any, mac: String, record: MeasurementRecord) {
+        val model = buildScaleModel(manager, mac, record, true)
+        val capability = classLoader.loadClass(CAPABILITY).getField("INSTANCE").get(null)!!
+        // AFU binding is already complete; do not suppress its first independent history session.
+        OppoReflect.call(capability, "clearSkipHistoryUntilDisconnect", mac)
+        val importer = classLoader.loadClass("com.heytap.device.ui.weight.scale.boohee.BooheeUnclaimedImporter")
+            .getField("INSTANCE").get(null)!!
+        OppoReflect.call(importer, "importHistory", false, OppoReflect.read(model, "getDeviceModel", "deviceModel"), model)
+    }
+    private fun findScaleManager(manager: Any) = OppoReflect.fieldByType(manager, OppoObjectFactory.BH_SCALE_MANAGER)
+    private fun findUserModel(manager: Any): Any? {
+        val scale = findScaleManager(manager) ?: return null
+        val builder = OppoReflect.call(scale, "getBuilder") ?: return null
+        return OppoReflect.fieldByType(builder, OppoObjectFactory.BH_USER_MODEL)
+    }
+    companion object { const val CAPABILITY = "com.heytap.device.ui.weight.scale.boohee.BooheeScaleCapabilityStore" }
 }

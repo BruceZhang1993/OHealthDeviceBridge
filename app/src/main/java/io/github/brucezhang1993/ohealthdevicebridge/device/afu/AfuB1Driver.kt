@@ -3,15 +3,43 @@ package io.github.brucezhang1993.ohealthdevicebridge.device.afu
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothManager
 import android.content.Context
+import android.os.Looper
 import io.github.brucezhang1993.ohealthdevicebridge.BridgeConstants
 import io.github.brucezhang1993.ohealthdevicebridge.device.*
-import java.util.concurrent.ConcurrentHashMap
+import java.util.Locale
 
-object AfuB1Driver:DeviceDriver{
-    override val model=BridgeConstants.AFU_MODEL;private val sessions=ConcurrentHashMap<String,AfuGattSession>()
-    override fun scan(context:Context,timeoutMs:Long,onDevice:(BridgeDevice)->Unit,onTimeout:()->Unit,onError:(Throwable)->Unit)=AfuBleScanner().scan(context,timeoutMs,onDevice,onTimeout,onError)
-    @SuppressLint("MissingPermission") override fun verifyForBind(context:Context,mac:String,onSuccess:()->Unit,onError:(Throwable)->Unit){disconnect(mac);val device=bluetoothDevice(context,mac,onError)?:return;lateinit var session:AfuGattSession;session=AfuGattSession(context,device,AfuGattSession.Mode.BIND_VERIFY,null,{sessions.remove(mac,session);onSuccess()},null,null,{sessions.remove(mac,session);onError(it)});sessions[mac]=session;session.connect()}
-    @SuppressLint("MissingPermission") override fun measure(context:Context,mac:String,profile:UserProfile,onLiveWeight:(Double)->Unit,onFinal:(MeasurementRecord)->Unit,onError:(Throwable)->Unit){disconnect(mac);val device=bluetoothDevice(context,mac,onError)?:return;lateinit var session:AfuGattSession;session=AfuGattSession(context,device,AfuGattSession.Mode.MEASURE,profile,null,onLiveWeight,onFinal,{sessions.remove(mac,session);onError(it)});sessions[mac]=session;session.connect()}
-    override fun disconnect(mac:String){sessions.remove(mac)?.disconnect()}
-    @SuppressLint("MissingPermission") private fun bluetoothDevice(context:Context,mac:String,onError:(Throwable)->Unit)=runCatching{val manager=context.getSystemService(BluetoothManager::class.java)?:error("BluetoothManager unavailable");manager.adapter?.getRemoteDevice(mac)?:error("Bluetooth adapter unavailable")}.onFailure(onError).getOrNull()
+object AfuB1Driver : DeviceDriver {
+    override val model = BridgeConstants.AFU_MODEL
+    private val sessions = java.util.concurrent.ConcurrentHashMap<String, AfuGattSession>()
+    private fun key(mac: String) = mac.uppercase(Locale.ROOT)
+    override fun scan(context: Context, timeoutMs: Long, onDevice: (BridgeDevice) -> Unit, onTimeout: () -> Unit, onError: (Throwable) -> Unit) =
+        AfuBleScanner().scan(context, timeoutMs, onDevice, onTimeout, onError)
+    override fun verifyForBind(context: Context, mac: String, onSuccess: () -> Unit, onError: (Throwable) -> Unit) =
+        start(context, mac, AfuGattSession.Mode.BIND_VERIFY, null, onSuccess, {}, {}, {}, {}, onError)
+    override fun measure(context: Context, mac: String, profile: UserProfile, onLiveWeight: (Double) -> Unit,
+                         onFinal: (MeasurementRecord) -> Unit, onHistory: (MeasurementRecord) -> Unit, onError: (Throwable) -> Unit) =
+        start(context, mac, AfuGattSession.Mode.MEASURE, profile, {}, onLiveWeight, onFinal, onHistory, {}, onError)
+    fun receiveHistory(context: Context, mac: String, profile: UserProfile, onHistory: (MeasurementRecord) -> Unit,
+                       onConnected: (Boolean) -> Unit, onError: (Throwable) -> Unit) =
+        start(context, mac, AfuGattSession.Mode.HISTORY, profile, {}, {}, {}, onHistory, onConnected, onError)
+
+    @SuppressLint("MissingPermission")
+    private fun start(context: Context, mac: String, mode: AfuGattSession.Mode, profile: UserProfile?, onBind: () -> Unit,
+                      onLive: (Double) -> Unit, onFinal: (MeasurementRecord) -> Unit, onHistory: (MeasurementRecord) -> Unit,
+                      onConnected: (Boolean) -> Unit, onError: (Throwable) -> Unit) {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        disconnect(mac)
+        try {
+            val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter ?: error("Bluetooth adapter unavailable")
+            check(adapter.isEnabled) { "Bluetooth is disabled" }
+            lateinit var session: AfuGattSession
+            session = AfuGattSession(context, adapter.getRemoteDevice(mac), mode, profile, onBind, onLive, onFinal, onHistory,
+                onConnected, onError, { sessions.remove(key(mac), session) })
+            sessions[key(mac)] = session
+            session.connect()
+        } catch (error: Exception) { onError(error) }
+    }
+    override fun disconnect(mac: String) { sessions.remove(key(mac))?.disconnect() }
+    fun hasSession(mac: String) = sessions.containsKey(key(mac))
+    fun isConnected(mac: String) = sessions[key(mac)]?.connected == true
 }

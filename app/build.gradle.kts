@@ -15,6 +15,8 @@ android {
         versionName = "0.1.0"
     }
 
+    testOptions.unitTests.isReturnDefaultValues = true
+
     buildFeatures {
         buildConfig = true
     }

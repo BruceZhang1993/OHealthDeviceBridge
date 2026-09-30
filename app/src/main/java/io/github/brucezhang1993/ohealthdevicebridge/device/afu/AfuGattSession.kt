@@ -7,37 +7,191 @@ import android.os.*
 import io.github.brucezhang1993.ohealthdevicebridge.BridgeLog
 import io.github.brucezhang1993.ohealthdevicebridge.device.*
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicBoolean
-import kotlin.math.abs
 
-internal class AfuGattSession(private val context:Context,private val device:BluetoothDevice,private val mode:Mode,private val profile:UserProfile?,private val onBindVerified:(()->Unit)?,private val onLiveWeight:((Double)->Unit)?,private val onFinal:((MeasurementRecord)->Unit)?,private val onError:(Throwable)->Unit){
-    enum class Mode{BIND_VERIFY,MEASURE}
-    private val mainHandler=Handler(Looper.getMainLooper());private val finished=AtomicBoolean(false);private val scheduled=mutableListOf<Runnable>();private var gatt:BluetoothGatt?=null;private var writeCharacteristic:BluetoothGattCharacteristic?=null;private var queue=AfuGattQueue({gatt},::fail);private var state=AfuSessionState.DISCONNECTED;private var subscriptionsPending=0;private var firstLive=true;private var lockAckSent=false;private var lastFrameElapsed=0L;private var weighStartedEpoch=0L;private var finalLiveWeightGrams=0;private var commitStarted=false;private var finalDelivered=false
-    @SuppressLint("MissingPermission") fun connect(){if(state!=AfuSessionState.DISCONNECTED)return;state=AfuSessionState.CONNECTING;BridgeLog.i("AFU GATT connect ${BridgeLog.maskedMac(device.address)} mode=$mode");gatt=device.connectGatt(context,false,callback,BluetoothDevice.TRANSPORT_LE);schedule(CONNECT_TIMEOUT_MS){if(state==AfuSessionState.CONNECTING)fail(IllegalStateException("GATT connect timeout"))}}
-    @SuppressLint("MissingPermission") fun disconnect(){if(!finished.compareAndSet(false,true))return;state=AfuSessionState.FINISHED;scheduled.forEach(mainHandler::removeCallbacks);scheduled.clear();queue.clear();runCatching{gatt?.disconnect()};runCatching{gatt?.close()};gatt=null}
-    private val callback=object:BluetoothGattCallback(){
-        @SuppressLint("MissingPermission") override fun onConnectionStateChange(gatt:BluetoothGatt,status:Int,newState:Int){if(finished.get())return;if(status!=BluetoothGatt.GATT_SUCCESS||newState!=BluetoothProfile.STATE_CONNECTED){fail(IllegalStateException("GATT connection failed status=$status state=$newState"));return};this@AfuGattSession.gatt=gatt;state=AfuSessionState.DISCOVERING;if(!gatt.discoverServices()){fail(IllegalStateException("discoverServices() could not start"));return};schedule(SERVICE_DISCOVERY_TIMEOUT_MS){if(state==AfuSessionState.DISCOVERING)fail(IllegalStateException("service discovery timeout"))}}
-        override fun onServicesDiscovered(gatt:BluetoothGatt,status:Int){if(finished.get())return;if(status!=BluetoothGatt.GATT_SUCCESS){fail(IllegalStateException("service discovery failed status=$status"));return};configureGatt(gatt)}
-        override fun onDescriptorWrite(gatt:BluetoothGatt,descriptor:BluetoothGattDescriptor,status:Int){queue.onDescriptorWrite(descriptor,status)}
-        override fun onCharacteristicWrite(gatt:BluetoothGatt,characteristic:BluetoothGattCharacteristic,status:Int){queue.onCharacteristicWrite(characteristic,status)}
-        @Deprecated("Deprecated in Android 13") override fun onCharacteristicChanged(gatt:BluetoothGatt,characteristic:BluetoothGattCharacteristic){@Suppress("DEPRECATION") handleNotification(characteristic.value?:return)}
-        override fun onCharacteristicChanged(gatt:BluetoothGatt,characteristic:BluetoothGattCharacteristic,value:ByteArray){handleNotification(value)}
+internal class AfuGattSession(
+    private val context: Context,
+    private val device: BluetoothDevice,
+    val mode: Mode,
+    profile: UserProfile?,
+    private val onBindVerified: () -> Unit,
+    onLiveWeight: (Double) -> Unit,
+    onFinal: (MeasurementRecord) -> Unit,
+    onHistory: (MeasurementRecord) -> Unit,
+    private val onConnected: (Boolean) -> Unit,
+    private val onError: (Throwable) -> Unit,
+    private val onClosed: () -> Unit,
+) {
+    enum class Mode { BIND_VERIFY, MEASURE, HISTORY }
+    private val handler = Handler(Looper.getMainLooper())
+    private val scheduled = mutableSetOf<Runnable>()
+    private var finished = false
+    @Volatile var connected = false
+        private set
+    private var state = AfuSessionState.DISCONNECTED
+    private var gatt: BluetoothGatt? = null
+    private var writeCharacteristic: BluetoothGattCharacteristic? = null
+    private val queue = AfuGattQueue({ gatt }, ::schedule, ::fail)
+    private val flow = profile?.let {
+        AfuMeasurementFlow(it, mode == Mode.HISTORY, ::enqueueWrite, onLiveWeight, onFinal, onHistory, ::disconnect)
     }
-    @SuppressLint("MissingPermission") private fun configureGatt(gatt:BluetoothGatt){writeCharacteristic=gatt.getService(WRITE_SERVICE_UUID)?.getCharacteristic(WRITE_CHARACTERISTIC_UUID);if(writeCharacteristic==null){fail(IllegalStateException("AFU write characteristic not found"));return};val subscribable=gatt.services.flatMap{it.characteristics}.filter{(it.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY)!=0||(it.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE)!=0};if(subscribable.isEmpty()){fail(IllegalStateException("AFU exposes no Notify/Indicate characteristic"));return};state=AfuSessionState.SUBSCRIBING;val ops=mutableListOf<Pair<BluetoothGattDescriptor,ByteArray>>();subscribable.forEach{c->if(!gatt.setCharacteristicNotification(c,true)){fail(IllegalStateException("setCharacteristicNotification failed for ${c.uuid}"));return};val cccd=c.getDescriptor(CCCD_UUID)?:return@forEach;val value=if((c.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE)!=0)BluetoothGattDescriptor.ENABLE_INDICATION_VALUE else BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE;ops+=cccd to value};if(ops.isEmpty()){fail(IllegalStateException("No CCCD descriptor found for AFU notifications"));return};subscriptionsPending=ops.size;ops.forEachIndexed{i,(d,v)->queue.enqueueDescriptor(d,v,"subscribe[$i] ${d.characteristic.uuid}"){subscriptionsPending--;if(subscriptionsPending==0)onSubscriptionsReady()}};schedule(SUBSCRIPTION_TIMEOUT_MS){if(state==AfuSessionState.SUBSCRIBING)fail(IllegalStateException("notification subscription timeout"))}}
-    private fun onSubscriptionsReady(){if(finished.get())return;BridgeLog.i("AFU notify/indicate subscriptions ready");state=AfuSessionState.HANDSHAKE;val now=nowEpoch();enqueueWrite(AfuProtocol.buildTimeSync(now),"time-sync");enqueueWrite(AfuProtocol.buildSyncFirst(),"sync-first");enqueueWrite(AfuProtocol.buildSyncSecond(),"sync-second"){if(mode==Mode.BIND_VERIFY){BridgeLog.i("AFU bind transport verified");onBindVerified?.invoke();disconnect()}else{val p=requireNotNull(profile);enqueueWrite(historyDump(p),"history-dump"){state=AfuSessionState.IDLE_HISTORY}}}}
-    private fun handleNotification(value:ByteArray){val parsed=AfuProtocol.parse(value)?:return;lastFrameElapsed=SystemClock.elapsedRealtime();when(parsed){is AfuProtocol.LiveWeight->handleLive(parsed);is AfuProtocol.StoredRecord->handleStored(parsed);is AfuProtocol.Impedance->enqueueWrite(AfuProtocol.buildAck(AfuProtocol.WIRE_IMPEDANCE),"ack-impedance");is AfuProtocol.ReportChunk->enqueueWrite(AfuProtocol.buildAck(0x14),"ack-report-${parsed.index}");is AfuProtocol.ControlAck->Unit;is AfuProtocol.UnknownFrame->Unit}}
-    private fun handleLive(live:AfuProtocol.LiveWeight){if(mode!=Mode.MEASURE||finalDelivered)return;if(firstLive){firstLive=false;weighStartedEpoch=nowEpoch();state=AfuSessionState.LIVE;enqueueWrite(profile(AfuProtocol.ProfileVariant.INITIAL),"profile-initial")};finalLiveWeightGrams=live.weightGrams;onLiveWeight?.invoke(live.weightGrams/1000.0);if(live.locked&&!lockAckSent){lockAckSent=true;state=AfuSessionState.WAIT_IDLE;enqueueWrite(AfuProtocol.buildAck(AfuProtocol.WIRE_LIVE_WEIGHT),"ack-live-lock");scheduleIdleCheck()}}
-    private fun scheduleIdleCheck(){schedule(IDLE_CHECK_INTERVAL_MS){if(finished.get()||state!=AfuSessionState.WAIT_IDLE)return@schedule;val silentFor=SystemClock.elapsedRealtime()-lastFrameElapsed;if(silentFor>=IDLE_THRESHOLD_MS)startCommit()else scheduleIdleCheck()}}
-    private fun startCommit(){if(commitStarted||finalDelivered||finished.get())return;commitStarted=true;state=AfuSessionState.COMMIT;val now=nowEpoch();enqueueWrite(AfuProtocol.buildTimeSync(now),"commit-time-sync");enqueueWrite(AfuProtocol.buildSyncFirst(),"commit-sync-first");enqueueWrite(AfuProtocol.buildSyncSecond(),"commit-sync-second");enqueueWrite(profile(AfuProtocol.ProfileVariant.GET_WEIGH_AGAIN_1),"profile-4b");enqueueWrite(profile(AfuProtocol.ProfileVariant.GET_WEIGH_AGAIN_2),"profile-5b");enqueueWrite(AfuProtocol.buildChunkRequest(),"chunk-request");schedule(COMMIT_TIMEOUT_MS){if(!finalDelivered&&state==AfuSessionState.COMMIT){val kg=finalLiveWeightGrams/1000.0;BridgeLog.i("AFU commit timeout; publishing weight-only result kg=$kg");deliverFinal(MeasurementRecord(nowEpoch(),kg,null))}}}
-    private fun handleStored(record:AfuProtocol.StoredRecord){enqueueWrite(AfuProtocol.buildAck(AfuProtocol.WIRE_STORED,record.sequence),"ack-stored-${record.sequence}");if(mode!=Mode.MEASURE||state!=AfuSessionState.COMMIT||finalDelivered)return;if(!isFreshRecord(record))return;deliverFinal(MeasurementRecord(record.timestampEpochSeconds,record.weightGrams/1000.0,record.resistanceOhm))}
-    private fun isFreshRecord(record:AfuProtocol.StoredRecord):Boolean{val now=nowEpoch();return record.locked&&record.timestampEpochSeconds>=weighStartedEpoch&&abs(now-record.timestampEpochSeconds)<=600L&&abs(record.weightGrams-finalLiveWeightGrams)<=1000}
-    private fun deliverFinal(record:MeasurementRecord){if(finalDelivered||finished.get())return;finalDelivered=true;onFinal?.invoke(record);state=AfuSessionState.DRAIN_HISTORY;val p=requireNotNull(profile);val now=nowEpoch();enqueueWrite(AfuProtocol.buildTimeSync(now),"cleanup-time-sync");enqueueWrite(AfuProtocol.buildSyncFirst(),"cleanup-sync-first");enqueueWrite(AfuProtocol.buildSyncSecond(),"cleanup-sync-second");enqueueWrite(historyDump(p),"cleanup-history-dump");scheduleDrainCheck(0)}
-    private fun scheduleDrainCheck(attempt:Int){schedule(IDLE_CHECK_INTERVAL_MS){if(finished.get()||state!=AfuSessionState.DRAIN_HISTORY)return@schedule;val silentFor=SystemClock.elapsedRealtime()-lastFrameElapsed;if(silentFor>=IDLE_THRESHOLD_MS||attempt>=20)disconnect()else scheduleDrainCheck(attempt+1)}}
-    private fun profile(v:AfuProtocol.ProfileVariant):ByteArray{val p=requireNotNull(profile);return AfuProtocol.buildProfile(v,nowEpoch(),p.userSlot,p.age,p.male,p.targetKg)}
-    private fun historyDump(p:UserProfile)=AfuProtocol.buildHistoryDump(nowEpoch(),p.userSlot,p.age,p.male,p.targetKg)
-    private fun enqueueWrite(frame:ByteArray,description:String,onSuccess:(()->Unit)?=null){val c=writeCharacteristic?:run{fail(IllegalStateException("write characteristic unavailable"));return};BridgeLog.i("AFU TX $description ${AfuProtocol.toHex(frame)}");queue.enqueueWrite(c,frame,description,onSuccess)}
-    private fun fail(error:Throwable){if(finished.get())return;BridgeLog.e("AFU session failed state=$state",error);onError(error);disconnect()}
-    private fun schedule(delayMs:Long,block:()->Unit){val r=Runnable(block);scheduled+=r;mainHandler.postDelayed(r,delayMs)}
-    private fun nowEpoch()=System.currentTimeMillis()/1000L
-    companion object{val WRITE_SERVICE_UUID:UUID=UUID.fromString("af000000-9f2d-4c8a-8d6f-6a7b45f90000");val WRITE_CHARACTERISTIC_UUID:UUID=UUID.fromString("af000002-9f2d-4c8a-8d6f-6a7b45f90000");val CCCD_UUID:UUID=UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");const val CONNECT_TIMEOUT_MS=10000L;const val SERVICE_DISCOVERY_TIMEOUT_MS=8000L;const val SUBSCRIPTION_TIMEOUT_MS=5000L;const val COMMIT_TIMEOUT_MS=15000L;const val IDLE_THRESHOLD_MS=2000L;const val IDLE_CHECK_INTERVAL_MS=250L}
+
+    @SuppressLint("MissingPermission")
+    fun connect() = dispatch {
+        if (state != AfuSessionState.DISCONNECTED) return@dispatch
+        state = AfuSessionState.CONNECTING
+        try {
+            gatt = device.connectGatt(context, false, callback, BluetoothDevice.TRANSPORT_LE)
+                ?: throw IllegalStateException("connectGatt returned null")
+            schedule(10_000L) { if (state == AfuSessionState.CONNECTING) fail(IllegalStateException("GATT connect timeout")) }
+            schedule(120_000L) { fail(IllegalStateException("AFU session timeout")) }
+        } catch (error: Exception) { fail(error) }
+    }
+
+    @SuppressLint("MissingPermission")
+    fun disconnect() {
+        check(Looper.myLooper() == handler.looper)
+        if (finished) return
+        finished = true
+        state = AfuSessionState.FINISHED
+        flow?.cancel()
+        scheduled.forEach(handler::removeCallbacks)
+        scheduled.clear()
+        queue.clear()
+        val oldGatt = gatt
+        gatt = null
+        try { oldGatt?.disconnect() } catch (error: Exception) { BridgeLog.e("AFU disconnect failed", error) }
+        finally {
+            try { oldGatt?.close() } catch (error: Exception) { BridgeLog.e("AFU GATT close failed", error) }
+            val wasConnected = connected
+            connected = false
+            onClosed()
+            if (wasConnected) onConnected(false)
+        }
+    }
+
+    private val callback = object : BluetoothGattCallback() {
+        @SuppressLint("MissingPermission")
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) = dispatch {
+            if (status != BluetoothGatt.GATT_SUCCESS || newState != BluetoothProfile.STATE_CONNECTED) {
+                fail(IllegalStateException("GATT connection failed status=$status state=$newState"))
+            } else {
+                state = AfuSessionState.DISCOVERING
+                if (!gatt.discoverServices()) fail(IllegalStateException("discoverServices could not start"))
+                else schedule(8_000L) { if (state == AfuSessionState.DISCOVERING) fail(IllegalStateException("service discovery timeout")) }
+            }
+        }
+        override fun onServicesDiscovered(gatt: BluetoothGatt, status: Int) = dispatch {
+            if (status != BluetoothGatt.GATT_SUCCESS) fail(IllegalStateException("service discovery failed status=$status"))
+            else configureGatt(gatt)
+        }
+        override fun onDescriptorWrite(gatt: BluetoothGatt, descriptor: BluetoothGattDescriptor, status: Int) =
+            dispatch { queue.onDescriptorWrite(descriptor, status) }
+        override fun onCharacteristicWrite(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, status: Int) =
+            dispatch { queue.onCharacteristicWrite(characteristic, status) }
+        @Deprecated("Deprecated in Android 13")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) {
+            @Suppress("DEPRECATION") val value = characteristic.value?.copyOf() ?: return
+            dispatch { handleNotification(value) }
+        }
+        @Suppress("OVERRIDE_DEPRECATION")
+        override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic, value: ByteArray) {
+            val copy = value.copyOf()
+            dispatch { handleNotification(copy) }
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun configureGatt(gatt: BluetoothGatt) {
+        writeCharacteristic = gatt.services.flatMap { it.characteristics }.firstOrNull { it.uuid == WRITE_CHARACTERISTIC_UUID }
+            ?: throw IllegalStateException("AFU write characteristic not found")
+        val write = requireNotNull(writeCharacteristic)
+        check(write.properties and (BluetoothGattCharacteristic.PROPERTY_WRITE or BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+            "AFU characteristic is not writable"
+        }
+        val subscribable = gatt.services.flatMap { it.characteristics }.filter {
+            it.properties and (BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0
+        }
+        check(subscribable.isNotEmpty()) { "AFU exposes no Notify/Indicate characteristic" }
+        state = AfuSessionState.SUBSCRIBING
+        var pending = subscribable.size
+        // Validate every subscription before enqueueing; callbacks are dispatched on the same looper.
+        val descriptors = subscribable.map { characteristic ->
+            check(gatt.setCharacteristicNotification(characteristic, true)) { "setCharacteristicNotification failed" }
+            val descriptor = characteristic.getDescriptor(CCCD_UUID) ?: error("AFU notification CCCD missing")
+            val value = if (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE != 0)
+                BluetoothGattDescriptor.ENABLE_INDICATION_VALUE else BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+            descriptor to value
+        }
+        descriptors.forEach { (descriptor, value) ->
+            queue.enqueueDescriptor(descriptor, value, "subscribe ${descriptor.characteristic.uuid}") {
+                pending--
+                if (pending == 0) handshake()
+            }
+        }
+    }
+
+    private fun handshake() {
+        state = AfuSessionState.HANDSHAKE
+        schedule(20_000L) { if (state == AfuSessionState.HANDSHAKE) fail(IllegalStateException("AFU handshake timeout")) }
+        enqueueWrite(AfuProtocol.buildTimeSync(epoch()), "time-sync")
+        enqueueWrite(AfuProtocol.buildSyncFirst(), "sync-first")
+        write(AfuProtocol.buildSyncSecond(), "sync-second") {
+            if (mode == Mode.BIND_VERIFY) {
+                disconnect()
+                onBindVerified()
+            } else {
+                state = AfuSessionState.IDLE_HISTORY
+                connected = true
+                onConnected(true)
+                flow?.ready(elapsed(), epoch())
+                poll()
+            }
+        }
+    }
+
+    private fun poll() {
+        schedule(250L) {
+            flow?.poll(elapsed(), epoch())
+            if (!finished) poll()
+        }
+    }
+    private fun handleNotification(value: ByteArray) {
+        val frame = AfuProtocol.parse(value) ?: return
+        flow?.receive(frame, elapsed(), epoch())
+    }
+    private fun enqueueWrite(frame: ByteArray, description: String) = write(frame, description)
+    private fun write(frame: ByteArray, description: String, done: () -> Unit = {}) {
+        if (finished) return
+        val characteristic = writeCharacteristic ?: throw IllegalStateException("AFU write characteristic unavailable")
+        BridgeLog.i("AFU TX $description bytes=${frame.size}")
+        queue.enqueueWrite(characteristic, frame, description, done)
+    }
+    private fun fail(error: Exception) {
+        if (finished) return
+        BridgeLog.e("AFU session failed state=$state", error)
+        disconnect()
+        onError(error)
+    }
+    private fun dispatch(block: () -> Unit) {
+        val action = {
+            if (!finished) try { block() } catch (error: Exception) { fail(error) }
+        }
+        if (Looper.myLooper() == handler.looper) action() else handler.post(action)
+    }
+    private fun schedule(delay: Long, block: () -> Unit): () -> Unit {
+        lateinit var task: Runnable
+        task = Runnable {
+            scheduled.remove(task)
+            if (!finished) try { block() } catch (error: Exception) { fail(error) }
+        }
+        scheduled.add(task)
+        handler.postDelayed(task, delay)
+        return { handler.removeCallbacks(task); scheduled.remove(task) }
+    }
+    private fun epoch() = System.currentTimeMillis() / 1000L
+    private fun elapsed() = SystemClock.elapsedRealtime()
+    companion object {
+        val WRITE_CHARACTERISTIC_UUID: UUID = UUID.fromString("af000002-9f2d-4c8a-8d6f-6a7b45f90000")
+        val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+    }
 }

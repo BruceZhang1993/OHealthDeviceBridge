@@ -30,7 +30,7 @@ interface DeviceDriver {
         onDevice: (BridgeDevice) -> Unit,
         onTimeout: () -> Unit,
         onError: (Throwable) -> Unit,
-    )
+    ): () -> Unit
 
     fun verifyForBind(
         context: Context,
@@ -45,6 +45,7 @@ interface DeviceDriver {
         profile: UserProfile,
         onLiveWeight: (Double) -> Unit,
         onFinal: (MeasurementRecord) -> Unit,
+        onHistory: (MeasurementRecord) -> Unit,
         onError: (Throwable) -> Unit,
     )
 

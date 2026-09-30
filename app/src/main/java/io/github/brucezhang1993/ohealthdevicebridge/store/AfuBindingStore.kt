@@ -1,27 +1,22 @@
 package io.github.brucezhang1993.ohealthdevicebridge.store
 
 import android.content.Context
+import java.util.Locale
 
 object AfuBindingStore {
     private const val PREFS = "ohealth_device_bridge"
-    private const val KEY_AFU_MACS = "afu_bound_macs"
-
-    fun add(context: Context, mac: String) {
+    // Versioned account namespaces intentionally do not adopt ambiguous legacy MACs.
+    private fun key(account: String) = "afu_bound_v2_$account"
+    fun add(context: Context, account: String, mac: String) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.edit().putStringSet(KEY_AFU_MACS, prefs.getStringSet(KEY_AFU_MACS, emptySet()).orEmpty() + mac).apply()
+        prefs.edit().putStringSet(key(account), macs(context, account) + normalize(mac)).apply()
     }
-
-    fun remove(context: Context, mac: String) {
+    fun remove(context: Context, account: String, mac: String) {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        prefs.edit().putStringSet(KEY_AFU_MACS, prefs.getStringSet(KEY_AFU_MACS, emptySet()).orEmpty() - mac).apply()
+        prefs.edit().putStringSet(key(account), macs(context, account) - normalize(mac)).apply()
     }
-
-    fun contains(context: Context, mac: String?): Boolean =
-        mac != null && macs(context).any { it.equals(mac, ignoreCase = true) }
-
-    fun macs(context: Context): Set<String> =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getStringSet(KEY_AFU_MACS, emptySet())
-            ?.toSet()
-            .orEmpty()
+    fun contains(context: Context, account: String, mac: String?) = mac != null && normalize(mac) in macs(context, account)
+    fun macs(context: Context, account: String): Set<String> = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        .getStringSet(key(account), emptySet()).orEmpty().map(::normalize).toSet()
+    fun normalize(mac: String) = mac.uppercase(Locale.ROOT)
 }

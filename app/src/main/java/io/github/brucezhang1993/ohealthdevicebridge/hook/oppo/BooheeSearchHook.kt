@@ -4,7 +4,44 @@ import de.robv.android.xposed.*
 import io.github.brucezhang1993.ohealthdevicebridge.*
 import io.github.brucezhang1993.ohealthdevicebridge.device.DeviceRegistry
 
-object BooheeSearchHook{
-    private const val BINDER="com.heytap.device.ui.weight.scale.boohee.BooheeScaleBinder"
-    fun install(cl:ClassLoader){val clazz=XposedHelpers.findClass(BINDER,cl);val hooks=XposedBridge.hookAllMethods(clazz,"startSearch",object:XC_MethodHook(){override fun beforeHookedMethod(param:MethodHookParam){val target=OppoReflect.readString(param.thisObject,"getTargetModel","targetModel");if(!target.equals(BridgeConstants.AFU_MODEL,true))return;val context=OppoReflect.context()?:return;val onDevice=param.args.getOrNull(1)?:return;val onTimeout=param.args.getOrNull(2)?:return;val onError=param.args.getOrNull(3);param.result=null;DeviceRegistry.afu().scan(context,15000L,{found->val bindable=OppoObjectFactory(cl).createBindable(found.mac);OppoReflect.postMain{OppoReflect.callFirst(onDevice,listOf("invoke"),bindable)}},{OppoReflect.postMain{OppoReflect.callFirst(onTimeout,listOf("invoke"))}},{e->BridgeLog.e("AFU scan failed",e);if(onError!=null)OppoReflect.postMain{OppoReflect.callFirst(onError,listOf("invoke"),e.message?:"AFU scan failed")}})}});check(hooks.isNotEmpty());HookInstallState.scan=true;BridgeLog.i("Boohee scan hook installed")}
+object BooheeSearchHook {
+    fun install(cl: ClassLoader) {
+        val clazz = XposedHelpers.findClass("com.heytap.device.ui.weight.scale.boohee.BooheeScaleBinder", cl)
+        val hooks = XposedBridge.hookAllMethods(clazz, "startSearch", object : XC_MethodHook() {
+            override fun beforeHookedMethod(param: MethodHookParam) {
+                if (!OppoReflect.readString(param.thisObject, "getTargetModel", "targetModel").equals(BridgeConstants.AFU_MODEL, true)) return
+                param.result = null
+                OppoReflect.postMain {
+                    val onError = param.args[3]
+                    try {
+                        val context = checkNotNull(OppoReflect.context()) { "OPPO context unavailable" }
+                        OppoAfuRuntime.stopAll()
+                        BooheeBindHook.pauseNative(cl, checkNotNull(OppoReflect.read(param.thisObject, "manager")))
+                        val ticket = OppoAfuRuntime.Ticket(OppoAccount.key(cl))
+                        OppoAfuRuntime.scans[param.thisObject] = ticket
+                        val timeout = (param.args[0] as Number).toLong().coerceIn(1, 120) * 1000L
+                        fun finish(action: () -> Unit) {
+                            try { if (ticket.valid(cl)) action() }
+                            finally {
+                                ticket.active = false
+                                ticket.cancelScan = null
+                                if (OppoAfuRuntime.scans[param.thisObject] === ticket) OppoAfuRuntime.scans.remove(param.thisObject)
+                            }
+                        }
+                        ticket.cancelScan = DeviceRegistry.afu().scan(context, timeout,
+                            { found -> finish {
+                                OppoReflect.call(param.args[1], "invoke", OppoObjectFactory(cl).createBindable(found.mac))
+                            } },
+                            { finish { OppoReflect.call(param.args[2], "invoke") } },
+                            { error -> finish { OppoReflect.call(onError, "invoke", error) } })
+                    } catch (error: Exception) {
+                        BridgeLog.e("AFU scan failed", error)
+                        OppoReflect.callFirst(onError, listOf("invoke"), error)
+                    }
+                }
+            }
+        })
+        check(hooks.isNotEmpty())
+        HookInstallState.scan = true
+    }
 }

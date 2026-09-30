@@ -17,6 +17,7 @@ class HookEntry : XposedModule() {
         runCatching {
             OppoHookInstaller.install(param.classLoader)
         }.onFailure {
+            if (it is VirtualMachineError) throw it
             installed = false
             BridgeLog.e("failed to install OPPO Health hooks", it)
         }
