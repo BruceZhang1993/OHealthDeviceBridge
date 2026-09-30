@@ -6,7 +6,22 @@ import com.highcapable.yukihookapi.hook.xposed.proxy.IYukiHookXposedInit
 import io.github.brucezhang1993.ohealthdevicebridge.hook.oppo.OppoHookInstaller
 
 @InjectYukiHookWithXposed
-object HookEntry:IYukiHookXposedInit{
-    override fun onInit()=YukiHookAPI.configs{isDebug=BuildConfig.DEBUG}
-    override fun onHook()=YukiHookAPI.encase{loadApp(name=BridgeConstants.TARGET_PACKAGE){BridgeLog.i("loading for $packageName process=$processName target=${BridgeConstants.TARGET_VERSION}");OppoHookInstaller.install(appClassLoader)}}
+object HookEntry : IYukiHookXposedInit {
+    override fun onInit() = YukiHookAPI.configs {
+        isDebug = BuildConfig.DEBUG
+    }
+
+    override fun onHook() = YukiHookAPI.encase {
+        loadApp(name = BridgeConstants.TARGET_PACKAGE) {
+            BridgeLog.i(
+                "loading for $packageName process=$processName target=${BridgeConstants.TARGET_VERSION}"
+            )
+            val classLoader = appClassLoader
+            if (classLoader != null) {
+                OppoHookInstaller.install(classLoader)
+            } else {
+                BridgeLog.e("OPPO Health appClassLoader is unavailable; hooks were not installed")
+            }
+        }
+    }
 }
