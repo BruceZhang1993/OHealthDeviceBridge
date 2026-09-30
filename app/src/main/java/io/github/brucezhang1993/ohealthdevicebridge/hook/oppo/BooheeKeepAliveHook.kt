@@ -15,11 +15,16 @@ internal object BooheeKeepAliveHook {
             if (!AfuBindingStore.contains(context, account, mac)) return@hook
             param.result = null
             OppoReflect.postMain {
+                val measure = OppoAfuRuntime.measure
+                if (measure != null && measure.mac?.let(AfuB1Driver::hasSession) != true) {
+                    measure.active = false
+                    OppoAfuRuntime.measure = null
+                }
                 if (OppoAfuRuntime.measure?.active == true || OppoAfuRuntime.bind?.active == true ||
                     OppoAfuRuntime.scans.values.any { it.active }) return@postMain
                 val current = OppoAfuRuntime.background
                 if (current?.active == true && current.mac.equals(mac, true) && AfuB1Driver.hasSession(mac)) {
-                    if (AfuB1Driver.isConnected(mac)) param.args.getOrNull(1)?.let { OppoReflect.callFirst(it, listOf("invoke"), true) }
+                    param.args.getOrNull(1)?.let { OppoReflect.callFirst(it, listOf("invoke"), AfuB1Driver.isConnected(mac)) }
                     return@postMain
                 }
                 OppoAfuRuntime.stopBackground()
