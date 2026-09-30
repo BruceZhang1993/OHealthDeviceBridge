@@ -1,27 +1,24 @@
 package io.github.brucezhang1993.ohealthdevicebridge
 
-import com.highcapable.yukihookapi.YukiHookAPI
-import com.highcapable.yukihookapi.annotation.xposed.InjectYukiHookWithXposed
-import com.highcapable.yukihookapi.hook.xposed.proxy.IYukiHookXposedInit
 import io.github.brucezhang1993.ohealthdevicebridge.hook.oppo.OppoHookInstaller
+import io.github.libxposed.api.XposedModule
+import io.github.libxposed.api.XposedModuleInterface
 
-@InjectYukiHookWithXposed
-object HookEntry : IYukiHookXposedInit {
-    override fun onInit() = YukiHookAPI.configs {
-        isDebug = BuildConfig.DEBUG
-    }
+class HookEntry : XposedModule() {
+    private var installed = false
 
-    override fun onHook() = YukiHookAPI.encase {
-        loadApp(name = BridgeConstants.TARGET_PACKAGE) {
-            BridgeLog.i(
-                "loading for $packageName process=$processName target=${BridgeConstants.TARGET_VERSION}"
-            )
-            val classLoader = appClassLoader
-            if (classLoader != null) {
-                OppoHookInstaller.install(classLoader)
-            } else {
-                BridgeLog.e("OPPO Health appClassLoader is unavailable; hooks were not installed")
-            }
+    override fun onPackageReady(param: XposedModuleInterface.PackageReadyParam) {
+        if (param.packageName != BridgeConstants.TARGET_PACKAGE || installed) return
+        installed = true
+
+        BridgeLog.i(
+            "loading modern Xposed entry for ${param.packageName} target=${BridgeConstants.TARGET_VERSION}"
+        )
+        runCatching {
+            OppoHookInstaller.install(param.classLoader)
+        }.onFailure {
+            installed = false
+            BridgeLog.e("failed to install OPPO Health hooks", it)
         }
     }
 }
