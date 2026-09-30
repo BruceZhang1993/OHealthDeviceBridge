@@ -38,6 +38,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.annotation:annotation:1.9.1")
     implementation("com.highcapable.yukihookapi:api:1.3.2")
     compileOnly("de.robv.android.xposed:api:82")
     ksp("com.highcapable.yukihookapi:ksp-xposed:1.3.2")
