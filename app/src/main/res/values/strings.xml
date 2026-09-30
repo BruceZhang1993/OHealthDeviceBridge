@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">OHealth Device Bridge</string>
+    <string name="xposed_description">Bridge third-party health devices into OPPO Health. Initial support: AFU-BH-TZ-B1.</string>
+</resources>
