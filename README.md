@@ -79,10 +79,37 @@ AFU 在 `BindableScaleDevice`/设备列表中仍是连接型秤；交给 ICOMON 
 CI 使用 Gradle 9.2.1 / AGP 8.13.1 / Kotlin 2.2.21 / JDK 21：
 
 ```bash
-gradle :app:testDebugUnitTest :app:assembleDebug
+gradle :app:testReleaseUnitTest :app:assembleRelease
 ```
 
 CI 额外检查 Modern Xposed 的 `java_init.list`、`module.prop`、`scope.list` 是否正确打入 APK，并确保不会重新打包 legacy `assets/xposed_init`。
+
+### CI 签名与 GitHub Release
+
+在仓库 **Settings → Secrets and variables → Actions** 配置以下 repository secrets：
+
+| Secret | 内容 |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | release keystore 文件的 Base64 内容（`base64 -w 0 /path/to/release.keystore`） |
+| `ANDROID_KEYSTORE_PASSWORD` | keystore 密码 |
+| `ANDROID_KEY_ALIAS` | 签名密钥 alias |
+| `ANDROID_KEY_PASSWORD` | 签名密钥密码 |
+
+所有 CI 和 release 必须使用同一把长期保存的签名密钥，才能覆盖安装更新；不要将 keystore 或密码提交到 Git。仓库当前未内置发布密钥，需要先配置上述 secrets。
+
+- 推送 `master` / `feature/**`：执行 release 单元测试、构建并签署 release APK，上传可直接下载的 APK artifact。`versionName` 为 `0.1.0-ci.<commit>`，`versionCode` 为当前 `master` 的提交数。
+- Pull request：执行相同的 release 单元测试、构建和 Xposed 元数据检查，不读取签名 secrets，也不上传未签名 APK。
+- 推送 `v1.2.3` 或 `1.2.3` 形式的 tag：复用 CI 构建签名流程，`versionName` 为去掉可选 `v` 前缀的 tag，`versionCode` 为截至 tag 提交的 master 历史提交数（`git rev-list --count <tag commit>`）。tag 必须位于 `master` 历史上，完整检出保证不会因浅克隆少算。验证通过后自动创建 GitHub Release 并附加签名 APK，用户可从 Releases 下载并安装。
+- `v1.2.3-rc.1` 等带预发布后缀的 tag 创建 prerelease，不设为 Latest。每次更新使用新的 master 提交和新 tag，使 `versionCode` 增长；重跑同一 tag 保持相同版本字段，已存在的 Release 不自动覆盖。
+
+确认发布内容已合入 `master` 后，例如发布 `v0.1.0`：
+
+```bash
+git tag v0.1.0 master
+git push origin v0.1.0
+```
+
+本地默认版本仍为 `0.1.0` / `1`，可用 `-PversionName=1.2.3 -PversionCode=123` 覆盖。本地 `assembleRelease` 生成未签名 APK，签名及验证由 CI 使用 Android Build Tools 的 `apksigner` 完成。
 
 ## 已知需要真机确认
 
