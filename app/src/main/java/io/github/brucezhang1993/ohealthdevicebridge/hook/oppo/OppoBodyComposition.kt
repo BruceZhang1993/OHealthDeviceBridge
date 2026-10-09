@@ -1,6 +1,7 @@
 package io.github.brucezhang1993.ohealthdevicebridge.hook.oppo
 
 import android.content.Context
+import io.github.brucezhang1993.ohealthdevicebridge.BridgeConstants
 import io.github.brucezhang1993.ohealthdevicebridge.device.*
 
 class OppoBodyComposition(private val classLoader: ClassLoader, private val factory: OppoObjectFactory) {
@@ -22,7 +23,7 @@ class OppoBodyComposition(private val classLoader: ClassLoader, private val fact
         require(age in 5..120 && target > 0) { "Invalid Boohee user profile" }
         return UserProfile(age, male, target)
     }
-    fun buildScaleModel(manager: Any, mac: String, record: MeasurementRecord, history: Boolean = false): Any {
+    fun buildScaleModel(manager: Any, mac: String, record: MeasurementRecord, history: Boolean = false, deviceModel: String = BridgeConstants.AFU_MODEL): Any {
         val clazz = classLoader.loadClass(OppoObjectFactory.BH_SCALE_MODEL)
         val model = clazz.getConstructor().newInstance()
         OppoReflect.call(model, "setWeight", record.weightKg.toFloat())
@@ -30,15 +31,17 @@ class OppoBodyComposition(private val classLoader: ClassLoader, private val fact
         OppoReflect.call(model, "setSecond", record.timestampEpochSeconds)
         OppoReflect.call(model, "setHistory", history)
         OppoReflect.call(model, "setLockData", true)
-        OppoReflect.call(model, "setDeviceModel", factory.createBhDevice(mac))
+        OppoReflect.call(model, "setDeviceModel", factory.createBhDevice(mac, deviceModel))
+        record.heartRateBpm?.let { OppoReflect.call(model, "setHeartRate", it) }
         if (record.resistanceOhm == null || record.resistanceOhm <= 0) return model
         val scaleManager = checkNotNull(findScaleManager(manager)) { "Boohee SDK unavailable" }
         val calculated = OppoReflect.call(scaleManager, "handleTheHistoryScaleModelDetailByScaleModel", model)
         check(clazz.isInstance(calculated)) { "ICOMON returned no result" }
+        record.heartRateBpm?.let { OppoReflect.call(requireNotNull(calculated), "setHeartRate", it) }
         return requireNotNull(calculated)
     }
-    fun importHistory(manager: Any, mac: String, record: MeasurementRecord) {
-        val model = buildScaleModel(manager, mac, record, true)
+    fun importHistory(manager: Any, mac: String, record: MeasurementRecord, deviceModel: String = BridgeConstants.AFU_MODEL) {
+        val model = buildScaleModel(manager, mac, record, true, deviceModel)
         val capability = classLoader.loadClass(CAPABILITY).getField("INSTANCE").get(null)!!
         // AFU binding is already complete; do not suppress its first independent history session.
         OppoReflect.call(capability, "clearSkipHistoryUntilDisconnect", mac)

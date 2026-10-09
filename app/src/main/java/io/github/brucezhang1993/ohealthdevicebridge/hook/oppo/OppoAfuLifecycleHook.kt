@@ -1,7 +1,9 @@
 package io.github.brucezhang1993.ohealthdevicebridge.hook.oppo
 
 import de.robv.android.xposed.*
-import io.github.brucezhang1993.ohealthdevicebridge.store.AfuBindingStore
+import io.github.brucezhang1993.ohealthdevicebridge.store.BridgeBindingStore
+import io.github.brucezhang1993.ohealthdevicebridge.device.xiaomi.XiaomiModels
+import io.github.brucezhang1993.ohealthdevicebridge.xiaomi.MiHomeBridgeClient
 
 internal object OppoAfuLifecycleHook {
     fun install(cl: ClassLoader) {
@@ -50,9 +52,10 @@ internal object OppoAfuLifecycleHook {
     private fun remove(cl: ClassLoader, mac: String) {
         val context = OppoReflect.context() ?: return
         val account = try { OppoAccount.key(cl) } catch (_: Exception) { return }
-        if (!AfuBindingStore.contains(context, account, mac)) return
+        val model = BridgeBindingStore.model(context, account, mac) ?: return
+        if (XiaomiModels.needsKey(model)) MiHomeBridgeClient.remove(context, account, mac)
         OppoAfuRuntime.stopAll()
-        AfuBindingStore.remove(context, account, mac)
+        BridgeBindingStore.remove(context, account, mac)
     }
     internal fun hook(clazz: Class<*>, name: String, before: (XC_MethodHook.MethodHookParam) -> Unit) {
         check(XposedBridge.hookAllMethods(clazz, name, object : XC_MethodHook() {

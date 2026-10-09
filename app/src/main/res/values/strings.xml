@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">OHealth Device Bridge</string>
-    <string name="xposed_description">Bridge third-party health devices into OPPO Health. Initial support: AFU-BH-TZ-B1.</string>
+    <string name="xposed_description">Bridge third-party health devices into OPPO Health. Supports AFU-BH-TZ-B1 and Xiaomi scales. Xiaomi Home credentials are read by this module with root.</string>
 </resources>

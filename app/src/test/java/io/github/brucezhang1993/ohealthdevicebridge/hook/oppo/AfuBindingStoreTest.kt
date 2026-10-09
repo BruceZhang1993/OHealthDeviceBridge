@@ -34,5 +34,16 @@ class AfuBindingStoreTest {
         assertFalse(AfuBindingStore.contains(context(), "account-B", mac))
         AfuBindingStore.remove(context(), "account-A", mac)
         assertTrue(AfuBindingStore.macs(context(), "account-A").isEmpty())
+        val store = io.github.brucezhang1993.ohealthdevicebridge.store.BridgeBindingStore
+        val xiaomi = io.github.brucezhang1993.ohealthdevicebridge.device.xiaomi.XiaomiModels.V2
+        val second = "AA:BB:CC:DD:EE:00"
+        AfuBindingStore.add(context(), "account-A", mac)
+        store.add(context(), "account-A", second, xiaomi.lowercase())
+        assertEquals(io.github.brucezhang1993.ohealthdevicebridge.BridgeConstants.AFU_MODEL, store.model(context(), "account-A", mac))
+        assertEquals(xiaomi, store.model(context(), "account-A", second))
+        assertNull(store.model(context(), "account-B", second))
+        store.remove(context(), "account-A", mac)
+        assertFalse(store.contains(context(), "account-A", mac))
+        assertEquals(xiaomi, store.model(context(), "account-A", second))
     }
 }

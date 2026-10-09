@@ -19,10 +19,14 @@ data class MeasurementRecord(
     val timestampEpochSeconds: Long,
     val weightKg: Double,
     val resistanceOhm: Int?,
+    val resistance250KhzOhm: Double? = null,
+    val heartRateBpm: Int? = null,
 )
 
 interface DeviceDriver {
     val model: String
+    fun hasSession(mac: String): Boolean = false
+    fun isConnected(mac: String): Boolean = false
 
     fun scan(
         context: Context,
@@ -50,4 +54,16 @@ interface DeviceDriver {
     )
 
     fun disconnect(mac: String)
+}
+
+/** Drivers with a bounded, independently cancellable history transport. */
+interface HistoryDeviceDriver : DeviceDriver {
+    fun receiveHistory(
+        context: Context,
+        mac: String,
+        profile: UserProfile,
+        onHistory: (MeasurementRecord) -> Unit,
+        onConnected: (Boolean) -> Unit,
+        onError: (Throwable) -> Unit,
+    )
 }

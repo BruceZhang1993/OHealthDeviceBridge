@@ -1,8 +1,8 @@
 package io.github.brucezhang1993.ohealthdevicebridge.hook.oppo
 
 import de.robv.android.xposed.*
-import io.github.brucezhang1993.ohealthdevicebridge.device.afu.AfuB1Driver
-import io.github.brucezhang1993.ohealthdevicebridge.store.AfuBindingStore
+import io.github.brucezhang1993.ohealthdevicebridge.device.DeviceRegistry
+import io.github.brucezhang1993.ohealthdevicebridge.store.BridgeBindingStore
 
 object BooheeDeviceOverlayHook {
     fun install(cl: ClassLoader) {
@@ -14,16 +14,17 @@ object BooheeDeviceOverlayHook {
                 val account = try { OppoAccount.key(cl) } catch (_: Exception) { return }
                 val original = param.result as? List<*> ?: return
                 for (item in original.filterNotNull()) {
-                    if (OppoReflect.readString(item, "getModel", "model").equals(io.github.brucezhang1993.ohealthdevicebridge.BridgeConstants.AFU_MODEL, true)) {
-                        OppoReflect.readString(item, "getMac", "mac")?.let { AfuBindingStore.add(context, account, it) }
+                    val model = OppoReflect.readString(item, "getModel", "model") ?: continue
+                    if (DeviceRegistry.byModel(model) != null) {
+                        OppoReflect.readString(item, "getMac", "mac")?.let { BridgeBindingStore.add(context, account, it, model) }
                     }
                 }
                 val existing = original.filterNotNull().mapNotNull { OppoReflect.readString(it, "getMac", "mac") }
-                    .map(AfuBindingStore::normalize).toSet()
+                    .map(io.github.brucezhang1993.ohealthdevicebridge.store.AfuBindingStore::normalize).toSet()
                 val items = ArrayList<Any>(original.filterNotNull())
                 val factory = OppoObjectFactory(cl)
-                for (mac in AfuBindingStore.macs(context, account) - existing) {
-                    items.add(factory.createWeightDevice(mac, AfuB1Driver.isConnected(mac)))
+                for ((mac, model) in BridgeBindingStore.devices(context, account).filterKeys { it !in existing }) {
+                    items.add(factory.createWeightDevice(mac, DeviceRegistry.byModel(model)?.isConnected(mac) == true, model))
                 }
                 param.result = items
             }

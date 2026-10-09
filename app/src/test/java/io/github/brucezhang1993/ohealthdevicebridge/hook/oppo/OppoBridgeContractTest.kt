@@ -91,4 +91,17 @@ class OppoBridgeContractTest {
         ticket.cancelScan = { cancelled++ }; ticket.cancel(); ticket.cancel()
         assertEquals(1, cancelled); assertFalse(ticket.valid(loader))
     }
+    @Test fun xiaomiRoutingRetainsModelAndHeartRateWithoutBooheeTransportWrites() {
+        val manager = Manager(); body.prepare(manager, context, null)
+        val device = io.github.brucezhang1993.ohealthdevicebridge.device.xiaomi.XiaomiModels.S400
+        val bindable = factory.createBindable(mac, device) as BindableScaleDevice
+        assertEquals(device, bindable.model)
+        val scale = body.buildScaleModel(manager, mac, record.copy(heartRateBpm = 80), deviceModel = device) as BHScaleModel
+        assertEquals(80, scale.heartRate)
+        assertEquals(0, manager.manager!!.transportWrites)
+        val weightOnly = body.buildScaleModel(manager, mac, MeasurementRecord(1001, 62.0, null), deviceModel = device) as BHScaleModel
+        assertEquals(0, weightOnly.heartRate)
+        assertEquals(0f, weightOnly.bodyResistance, 0f)
+    }
+
 }

@@ -89,7 +89,7 @@ REQUIRED = {
         '<init>(Ljava/lang/String;Ljava/lang/String;)V', 'setDeviceId(Ljava/lang/String;)V',
         'setDeviceMac(Ljava/lang/String;)V', 'setDeviceModel(Ljava/lang/String;)V', 'setDeviceName(Ljava/lang/String;)V'},
     'com.boohee.scale_sdk.data.BHScaleModel': {
-        '<init>()V', 'setWeight(F)V', 'setBodyResistance(F)V', 'setSecond(J)V', 'setHistory(Z)V',
+        '<init>()V', 'setWeight(F)V', 'setBodyResistance(F)V', 'setHeartRate(I)V', 'setSecond(J)V', 'setHistory(Z)V',
         'setLockData(Z)V', 'setDeviceModel(Lcom/boohee/scale_sdk/device/BHDeviceModel;)V'},
     'com.boohee.scale_sdk.BHScaleManager': {
         'getBuilder()Lcom/boohee/scale_sdk/BHScaleManager$Builder;',

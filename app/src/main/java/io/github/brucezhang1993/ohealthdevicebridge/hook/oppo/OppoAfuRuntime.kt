@@ -1,11 +1,12 @@
 package io.github.brucezhang1993.ohealthdevicebridge.hook.oppo
 
-import io.github.brucezhang1993.ohealthdevicebridge.device.afu.AfuB1Driver
+import io.github.brucezhang1993.ohealthdevicebridge.device.DeviceRegistry
+import io.github.brucezhang1993.ohealthdevicebridge.BridgeConstants
 import java.util.WeakHashMap
 
-/** One OPPO manager owns the AFU transport; tickets reject callbacks after cancel/account change. */
+/** One OPPO manager owns the bridge transport; tickets reject callbacks after cancel/account change. */
 internal object OppoAfuRuntime {
-    class Ticket(val account: String, val mac: String? = null) {
+    class Ticket(val account: String, val mac: String? = null, val model: String = BridgeConstants.AFU_MODEL) {
         var active = true
         var cancelScan: (() -> Unit)? = null
         var gaveUp = false
@@ -19,7 +20,7 @@ internal object OppoAfuRuntime {
             active = false
             cancelScan?.invoke()
             cancelScan = null
-            mac?.let(AfuB1Driver::disconnect)
+            mac?.let { DeviceRegistry.byModel(model)?.disconnect(it) }
         }
     }
     val scans = WeakHashMap<Any, Ticket>()
