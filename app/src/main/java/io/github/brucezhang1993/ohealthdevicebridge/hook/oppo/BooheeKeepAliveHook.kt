@@ -1,10 +1,11 @@
 package io.github.brucezhang1993.ohealthdevicebridge.hook.oppo
 
+import android.content.Context
 import de.robv.android.xposed.*
 import io.github.brucezhang1993.ohealthdevicebridge.BridgeLog
-import io.github.brucezhang1993.ohealthdevicebridge.device.afu.AfuB1Driver
+import io.github.brucezhang1993.ohealthdevicebridge.device.DeviceDriver
 import io.github.brucezhang1993.ohealthdevicebridge.device.DeviceRegistry
-import io.github.brucezhang1993.ohealthdevicebridge.BridgeConstants
+import io.github.brucezhang1993.ohealthdevicebridge.device.HistoryDeviceDriver
 import io.github.brucezhang1993.ohealthdevicebridge.store.BridgeBindingStore
 
 internal object BooheeKeepAliveHook {
@@ -15,43 +16,10 @@ internal object BooheeKeepAliveHook {
             val context = OppoReflect.context() ?: return@hook
             val account = try { OppoAccount.key(cl) } catch (_: Exception) { return@hook }
             val model = BridgeBindingStore.model(context, account, mac) ?: return@hook
+            val driver = DeviceRegistry.byModel(model) ?: return@hook
             param.result = null
-            if (model != BridgeConstants.AFU_MODEL) return@hook
             OppoReflect.postMain {
-                val measure = OppoAfuRuntime.measure
-                if (measure != null && measure.mac?.let { DeviceRegistry.byModel(measure.model)?.hasSession(it) } != true) {
-                    measure.active = false
-                    OppoAfuRuntime.measure = null
-                }
-                if (OppoAfuRuntime.measure?.active == true || OppoAfuRuntime.bind?.active == true ||
-                    OppoAfuRuntime.scans.values.any { it.active }) return@postMain
-                val current = OppoAfuRuntime.background
-                if (current?.active == true && current.mac.equals(mac, true) && AfuB1Driver.hasSession(mac)) {
-                    param.args.getOrNull(1)?.let { OppoReflect.callFirst(it, listOf("invoke"), AfuB1Driver.isConnected(mac)) }
-                    return@postMain
-                }
-                OppoAfuRuntime.stopBackground()
-                val ticket = OppoAfuRuntime.Ticket(account, mac)
-                val onState = param.args.getOrNull(1)
-                try {
-                    // Stop original SDK ownership before installing the AFU background ticket.
-                    OppoReflect.call(param.thisObject, "forceStopKeepAlive", "AFU history transport")
-                    OppoAfuRuntime.background = ticket
-                    val body = OppoBodyComposition(cl, OppoObjectFactory(cl))
-                    body.prepare(param.thisObject, context, null)
-                    AfuB1Driver.receiveHistory(context, mac, body.currentUserProfile(param.thisObject),
-                        { record -> if (ticket.valid(cl)) body.importHistory(param.thisObject, mac, record) },
-                        { connected -> if (ticket.valid(cl) && onState != null) OppoReflect.call(onState, "invoke", connected) },
-                        { error -> if (ticket.valid(cl)) {
-                            ticket.gaveUp = true
-                            BridgeLog.e("AFU background history failed", error)
-                            if (onState != null) OppoReflect.callFirst(onState, listOf("invoke"), false)
-                        } })
-                } catch (error: Exception) {
-                    ticket.gaveUp = true
-                    BridgeLog.e("AFU background preparation failed", error)
-                    if (onState != null) OppoReflect.callFirst(onState, listOf("invoke"), false)
-                }
+                startHistory(cl, context, param.thisObject, account, mac, driver, param.args.getOrNull(1))
             }
         }
         for (name in listOf("forceStopKeepAlive", "detachKeepAliveWithoutDisconnect"))
@@ -69,5 +37,56 @@ internal object BooheeKeepAliveHook {
             }
         }
         HookInstallState.keepAlive = true
+    }
+
+    internal fun startHistory(cl: ClassLoader, context: Context, manager: Any, account: String, mac: String,
+                              driver: DeviceDriver, onState: Any?) {
+        if (try { OppoAccount.key(cl) != account } catch (_: Exception) { true }) return
+        fun reportCurrent() { onState?.let { OppoReflect.callFirst(it, listOf("invoke"), driver.isConnected(mac)) } }
+        val measure = OppoAfuRuntime.measure
+        if (measure != null && measure.mac?.let { DeviceRegistry.byModel(measure.model)?.hasSession(it) } != true) {
+            measure.active = false
+            OppoAfuRuntime.measure = null
+        }
+        if (OppoAfuRuntime.measure?.active == true || OppoAfuRuntime.bind?.active == true ||
+            OppoAfuRuntime.scans.values.any { it.active }) { reportCurrent(); return }
+        if (driver !is HistoryDeviceDriver) {
+            OppoAfuRuntime.stopBackground()
+            reportCurrent()
+            return
+        }
+        val current = OppoAfuRuntime.background
+        if (current?.active == true && current.account == account && current.model == driver.model &&
+            current.mac.equals(mac, true) && driver.hasSession(mac)) { reportCurrent(); return }
+        OppoAfuRuntime.stopBackground()
+        val ticket = OppoAfuRuntime.Ticket(account, mac, driver.model)
+        var lastState: Boolean? = null
+        fun report(connected: Boolean) {
+            if (ticket.valid(cl) && lastState != connected) {
+                lastState = connected
+                onState?.let { OppoReflect.callFirst(it, listOf("invoke"), connected) }
+            }
+        }
+        try {
+            // Native stop also cancels our background ticket, so install the new owner afterwards.
+            OppoReflect.call(manager, "forceStopKeepAlive", "Bridge history transport")
+            OppoAfuRuntime.background = ticket
+            val body = OppoBodyComposition(cl, OppoObjectFactory(cl))
+            body.prepare(manager, context, null)
+            driver.receiveHistory(context, mac, body.currentUserProfile(manager),
+                { record -> if (ticket.valid(cl)) body.importHistory(manager, mac, record, deviceModel = driver.model) },
+                ::report,
+                { error -> if (ticket.valid(cl)) {
+                    ticket.gaveUp = true
+                    BridgeLog.e("Bridge background history failed", error)
+                    report(false)
+                } })
+        } catch (error: Exception) {
+            if (ticket.valid(cl)) {
+                ticket.gaveUp = true
+                BridgeLog.e("Bridge background preparation failed", error)
+                report(false)
+            }
+        }
     }
 }

@@ -8,7 +8,7 @@ import io.github.brucezhang1993.ohealthdevicebridge.BridgeConstants
 import io.github.brucezhang1993.ohealthdevicebridge.device.*
 import java.util.Locale
 
-object AfuB1Driver : DeviceDriver {
+object AfuB1Driver : HistoryDeviceDriver {
     override val model = BridgeConstants.AFU_MODEL
     private val sessions = java.util.concurrent.ConcurrentHashMap<String, AfuGattSession>()
     private fun key(mac: String) = mac.uppercase(Locale.ROOT)
@@ -19,7 +19,7 @@ object AfuB1Driver : DeviceDriver {
     override fun measure(context: Context, mac: String, profile: UserProfile, onLiveWeight: (Double) -> Unit,
                          onFinal: (MeasurementRecord) -> Unit, onHistory: (MeasurementRecord) -> Unit, onError: (Throwable) -> Unit) =
         start(context, mac, AfuGattSession.Mode.MEASURE, profile, {}, onLiveWeight, onFinal, onHistory, {}, onError)
-    fun receiveHistory(context: Context, mac: String, profile: UserProfile, onHistory: (MeasurementRecord) -> Unit,
+    override fun receiveHistory(context: Context, mac: String, profile: UserProfile, onHistory: (MeasurementRecord) -> Unit,
                        onConnected: (Boolean) -> Unit, onError: (Throwable) -> Unit) =
         start(context, mac, AfuGattSession.Mode.HISTORY, profile, {}, {}, {}, onHistory, onConnected, onError)
 

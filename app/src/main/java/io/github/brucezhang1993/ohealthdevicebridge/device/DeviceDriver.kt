@@ -55,3 +55,15 @@ interface DeviceDriver {
 
     fun disconnect(mac: String)
 }
+
+/** Drivers with a bounded, independently cancellable history transport. */
+interface HistoryDeviceDriver : DeviceDriver {
+    fun receiveHistory(
+        context: Context,
+        mac: String,
+        profile: UserProfile,
+        onHistory: (MeasurementRecord) -> Unit,
+        onConnected: (Boolean) -> Unit,
+        onError: (Throwable) -> Unit,
+    )
+}

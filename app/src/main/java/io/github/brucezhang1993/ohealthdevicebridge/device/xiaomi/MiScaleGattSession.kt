@@ -13,10 +13,12 @@ import java.util.UUID
 @SuppressLint("MissingPermission")
 internal class MiScaleGattSession(
     private val context: Context, private val device: BluetoothDevice, private val v2: Boolean,
-    private val bindOnly: Boolean, private val verified: () -> Unit, private val live: (Double) -> Unit,
+    private val mode: Mode, private val verified: () -> Unit, private val live: (Double) -> Unit,
     private val final: (MeasurementRecord) -> Unit, private val history: (MeasurementRecord) -> Unit,
+    private val onConnected: (Boolean) -> Unit,
     private val failed: (Throwable) -> Unit, private val closed: () -> Unit,
 ) {
+    enum class Mode { BIND_VERIFY, MEASURE, HISTORY }
     private val main = Handler(Looper.getMainLooper())
     private val scheduled = mutableSetOf<Runnable>()
     private var gatt: BluetoothGatt? = null
@@ -69,7 +71,9 @@ internal class MiScaleGattSession(
         }
         fun ready() {
             connected = true
-            if (bindOnly) { disconnect(); verified(); return }
+            if (mode == Mode.BIND_VERIFY) { disconnect(); verified(); return }
+            onConnected(true)
+            if (!active) return
             val marker = (System.nanoTime() and 0xffff).toInt()
             transferMarker = marker
             // Request all available history, never send a delete-history command.
@@ -85,18 +89,20 @@ internal class MiScaleGattSession(
         }
     }
     private fun receive(uuid: UUID, data: ByteArray) {
-        if (bindOnly) return
+        if (mode == Mode.BIND_VERIFY) return
         val wasHistory = transfer.transferring && uuid == HISTORY
         val records = if (uuid == HISTORY) transfer.feed(data, epoch()) else listOfNotNull(MiScaleProtocol.parse(data, data.size == 13, epoch()))
         if (uuid == HISTORY && data.contentEquals(byteArrayOf(3))) historyCharacteristic?.let {
             queue.enqueueWrite(it, byteArrayOf(3), "Xiaomi history stop acknowledgement")
-            queue.enqueueWrite(it, byteArrayOf(4, 0xff.toByte(), 0xff.toByte(), (transferMarker shr 8).toByte(), transferMarker.toByte()), "Xiaomi history completion acknowledgement")
+            queue.enqueueWrite(it, byteArrayOf(4, 0xff.toByte(), 0xff.toByte(), (transferMarker shr 8).toByte(), transferMarker.toByte()), "Xiaomi history completion acknowledgement") {
+                if (mode == Mode.HISTORY) disconnect()
+            }
         }
         records.forEach { reading ->
             if (reading.removed || reading.record.weightKg <= 0) { pendingFinal = null; return@forEach }
             if (wasHistory) {
                 if (reading.stable && reading.dated && seen.add(reading.record.timestampEpochSeconds to reading.record.weightKg)) history(reading.record)
-            } else {
+            } else if (mode == Mode.MEASURE) {
                 live(reading.record.weightKg)
                 if (reading.stable) {
                     if (!v2 || reading.record.resistanceOhm != null) emitFinal(reading.record)
@@ -111,10 +117,12 @@ internal class MiScaleGattSession(
     private fun emitFinal(record: MeasurementRecord) { pendingFinal = null; if (seen.add(record.timestampEpochSeconds to record.weightKg)) final(record) }
     fun disconnect() {
         if (!active) return
+        val wasConnected = connected
         active = false; connected = false; scheduled.forEach(main::removeCallbacks); scheduled.clear(); queue.clear()
         val old = gatt; gatt = null
         try { old?.disconnect() } catch (_: Exception) { }
         finally { try { old?.close() } catch (_: Exception) { } finally { closed() } }
+        if (wasConnected) onConnected(false)
     }
     private fun fail(error: Exception) { if (active) { disconnect(); failed(error) } }
     private fun dispatch(block: () -> Unit) { main.post { if (active) try { block() } catch (error: Exception) { fail(error) } } }
