@@ -3,7 +3,7 @@ package io.github.brucezhang1993.ohealthdevicebridge.hook.oppo
 import de.robv.android.xposed.*
 import io.github.brucezhang1993.ohealthdevicebridge.*
 import io.github.brucezhang1993.ohealthdevicebridge.device.DeviceRegistry
-import io.github.brucezhang1993.ohealthdevicebridge.store.AfuBindingStore
+import io.github.brucezhang1993.ohealthdevicebridge.store.BridgeBindingStore
 
 object BooheeBindHook {
     fun install(cl: ClassLoader) {
@@ -11,7 +11,8 @@ object BooheeBindHook {
         val hooks = XposedBridge.hookAllMethods(clazz, "bind", object : XC_MethodHook() {
             override fun beforeHookedMethod(param: MethodHookParam) {
                 val device = param.args[0]
-                if (!OppoReflect.readString(device, "getModel", "model").equals(BridgeConstants.AFU_MODEL, true)) return
+                val model = OppoReflect.readString(device, "getModel", "model") ?: return
+                val driver = DeviceRegistry.byModel(model) ?: return
                 param.result = null
                 OppoReflect.postMain {
                     val listener = param.args[1]
@@ -20,13 +21,13 @@ object BooheeBindHook {
                         val mac = checkNotNull(OppoReflect.readString(device, "getMac", "mac"))
                         OppoAfuRuntime.stopAll()
                         pauseNative(cl, param.thisObject)
-                        val ticket = OppoAfuRuntime.Ticket(OppoAccount.key(cl), mac)
+                        val ticket = OppoAfuRuntime.Ticket(OppoAccount.key(cl), mac, model)
                         OppoAfuRuntime.bind = ticket
-                        DeviceRegistry.afu().verifyForBind(context, mac, {
+                        driver.verifyForBind(context, mac, {
                             if (ticket.valid(cl)) {
                                 try {
                                     OppoReflect.call(param.thisObject, "onBindSucceededOnThisPhone", mac)
-                                    AfuBindingStore.add(context, ticket.account, mac)
+                                    BridgeBindingStore.add(context, ticket.account, mac, model)
                                     // Local transport binding is independent of asynchronous cloud persistence.
                                     OppoReflect.call(listener, "onSuccess", device)
                                 } catch (error: Exception) {

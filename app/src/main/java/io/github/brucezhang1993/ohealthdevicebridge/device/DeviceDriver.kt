@@ -19,10 +19,14 @@ data class MeasurementRecord(
     val timestampEpochSeconds: Long,
     val weightKg: Double,
     val resistanceOhm: Int?,
+    val resistance250KhzOhm: Double? = null,
+    val heartRateBpm: Int? = null,
 )
 
 interface DeviceDriver {
     val model: String
+    fun hasSession(mac: String): Boolean = false
+    fun isConnected(mac: String): Boolean = false
 
     fun scan(
         context: Context,

@@ -3,7 +3,9 @@ package io.github.brucezhang1993.ohealthdevicebridge.hook.oppo
 import de.robv.android.xposed.*
 import io.github.brucezhang1993.ohealthdevicebridge.BridgeLog
 import io.github.brucezhang1993.ohealthdevicebridge.device.afu.AfuB1Driver
-import io.github.brucezhang1993.ohealthdevicebridge.store.AfuBindingStore
+import io.github.brucezhang1993.ohealthdevicebridge.device.DeviceRegistry
+import io.github.brucezhang1993.ohealthdevicebridge.BridgeConstants
+import io.github.brucezhang1993.ohealthdevicebridge.store.BridgeBindingStore
 
 internal object BooheeKeepAliveHook {
     fun install(cl: ClassLoader) {
@@ -12,11 +14,12 @@ internal object BooheeKeepAliveHook {
             val mac = param.args[0] as? String ?: return@hook
             val context = OppoReflect.context() ?: return@hook
             val account = try { OppoAccount.key(cl) } catch (_: Exception) { return@hook }
-            if (!AfuBindingStore.contains(context, account, mac)) return@hook
+            val model = BridgeBindingStore.model(context, account, mac) ?: return@hook
             param.result = null
+            if (model != BridgeConstants.AFU_MODEL) return@hook
             OppoReflect.postMain {
                 val measure = OppoAfuRuntime.measure
-                if (measure != null && measure.mac?.let(AfuB1Driver::hasSession) != true) {
+                if (measure != null && measure.mac?.let { DeviceRegistry.byModel(measure.model)?.hasSession(it) } != true) {
                     measure.active = false
                     OppoAfuRuntime.measure = null
                 }
@@ -58,10 +61,10 @@ internal object BooheeKeepAliveHook {
                 val mac = param.args.firstOrNull() as? String ?: return@hook
                 val context = OppoReflect.context() ?: return@hook
                 val account = try { OppoAccount.key(cl) } catch (_: Exception) { return@hook }
-                if (AfuBindingStore.contains(context, account, mac)) {
+                if (BridgeBindingStore.contains(context, account, mac)) {
                     param.result = if (name == "isKeepAliveGiveUp")
                         OppoAfuRuntime.background?.let { it.mac.equals(mac, true) && it.gaveUp } == true
-                    else AfuB1Driver.isConnected(mac)
+                    else BridgeBindingStore.model(context, account, mac)?.let { DeviceRegistry.byModel(it)?.isConnected(mac) } == true
                 }
             }
         }

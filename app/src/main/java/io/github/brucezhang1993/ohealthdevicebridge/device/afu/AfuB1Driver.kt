@@ -40,6 +40,6 @@ object AfuB1Driver : DeviceDriver {
         } catch (error: Exception) { onError(error) }
     }
     override fun disconnect(mac: String) { sessions.remove(key(mac))?.disconnect() }
-    fun hasSession(mac: String) = sessions.containsKey(key(mac))
-    fun isConnected(mac: String) = sessions[key(mac)]?.connected == true
+    override fun hasSession(mac: String) = sessions.containsKey(key(mac))
+    override fun isConnected(mac: String) = sessions[key(mac)]?.connected == true
 }

@@ -19,6 +19,7 @@ android {
 
     buildFeatures {
         buildConfig = true
+        aidl = true
     }
 
     compileOptions {
@@ -44,5 +45,9 @@ dependencies {
     compileOnly("io.github.libxposed:api:101.0.1")
     compileOnly("de.robv.android.xposed:api:82")
 
+    implementation("com.github.topjohnwu.libsu:service:6.0.0")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.83")
+
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20250517")
 }
